@@ -12,15 +12,14 @@ def inference(args):
 
     # Load Model
     print(f"Loading model from {args.model_path}")
-    # The model parameters must match the ones used during training
+    # The model parameters must match the ones used for the saved checkpoint
     model = XrayTo3D(
-        image_size=32,
-        patch_size=4,
-        enc_dim=512,
-        enc_depth=6,
-        enc_heads=8,
-        enc_mlp_dim=1024,
-        output_shape=(1, 32, 32, 32)
+        image_size=args.image_size,
+        patch_size=args.patch_size,
+        volume_size=args.volume_size,
+        # The other params like enc_dim, depth, etc., must also match the trained model.
+        # For simplicity, we assume they are the defaults. A more robust solution
+        # would save model hyperparameters in the checkpoint file.
     )
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.to(device)
@@ -44,11 +43,9 @@ def inference(args):
     print("Inference complete.")
 
     # Post-process
-    # Remove batch and channel dimensions, and move to CPU
     recon_volume = recon_volume.squeeze(0).squeeze(0).cpu().numpy()
 
     # Save as NIfTI
-    # Use identity affine matrix as a default
     affine = np.eye(4)
     nifti_img = nib.Nifti1Image(recon_volume, affine)
 
@@ -59,10 +56,16 @@ def inference(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run inference with XrayTo3D model.")
 
+    # Required paths
     parser.add_argument('--frontal_image_path', type=str, required=True, help='Path to the frontal .pt image.')
     parser.add_argument('--lateral_image_path', type=str, required=True, help='Path to the lateral .pt image.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the trained model checkpoint (.pth).')
     parser.add_argument('--output_path', type=str, default='output.nii.gz', help='Path to save the output NIfTI file.')
+
+    # Model dimensions - should match the trained model
+    parser.add_argument('--image_size', type=int, default=256, help='Size of the input 2D images.')
+    parser.add_argument('--patch_size', type=int, default=16, help='Patch size for the ViT encoder.')
+    parser.add_argument('--volume_size', type=int, default=256, help='Size of the output 3D volume.')
 
     args = parser.parse_args()
     inference(args)

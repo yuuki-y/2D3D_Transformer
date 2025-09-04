@@ -57,8 +57,13 @@ def train(args):
 
     # Model
     model = XrayTo3D(
-        image_size=32, patch_size=4, enc_dim=512, enc_depth=6,
-        enc_heads=8, enc_mlp_dim=1024, output_shape=(1, 32, 32, 32)
+        image_size=args.image_size,
+        patch_size=args.patch_size,
+        volume_size=args.volume_size,
+        enc_dim=512,
+        enc_depth=6,
+        enc_heads=8,
+        enc_mlp_dim=1024
     ).to(device)
     if args.use_wandb:
         wandb.watch(model, log='all')
@@ -140,6 +145,11 @@ if __name__ == '__main__':
     parser.add_argument('--use_wandb', action='store_true', help='Enable WandB logging.')
     parser.add_argument('--wandb_project', type=str, default='xray-to-3d', help='WandB project name.')
     parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity (username or team).')
+
+    # Model dimensions
+    parser.add_argument('--image_size', type=int, default=256, help='Size of the input 2D images.')
+    parser.add_argument('--patch_size', type=int, default=16, help='Patch size for the ViT encoder.')
+    parser.add_argument('--volume_size', type=int, default=256, help='Size of the output 3D volume.')
 
     args = parser.parse_args()
     train(args)

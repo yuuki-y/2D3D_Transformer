@@ -2,6 +2,7 @@ import torch
 from torch import nn, Tensor
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
+import numpy as np
 
 # Helper modules
 def pair(t):
@@ -119,33 +120,31 @@ class ViTEncoder(nn.Module):
 
 # 3D Convolutional Decoder
 class Decoder3D(nn.Module):
-    def __init__(self, *, input_dim, output_shape, initial_shape=(512, 4, 4, 4)):
+    def __init__(self, *, input_dim, output_size=256, initial_size=4, latent_channels=512):
         super().__init__()
-        self.initial_shape = initial_shape
-        self.output_shape = output_shape
+        self.initial_shape = (latent_channels, initial_size, initial_size, initial_size)
+        self.linear = nn.Linear(input_dim, int(torch.prod(torch.tensor(self.initial_shape))))
 
-        self.linear = nn.Linear(input_dim, int(torch.prod(torch.tensor(initial_shape))))
+        layers = []
 
-        # Upsampling layers
-        self.upsample = nn.Sequential(
-            # From 4x4x4 to 8x8x8
-            nn.ConvTranspose3d(initial_shape[0], 256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm3d(256),
-            nn.ReLU(True),
-            # From 8x8x8 to 16x16x16
-            nn.ConvTranspose3d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm3d(128),
-            nn.ReLU(True),
-            # From 16x16x16 to 32x32x32
-            nn.ConvTranspose3d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm3d(64),
-            nn.ReLU(True),
-            # To final size (e.g., 32x32x32)
-            # This final layer can be adjusted to match the final desired size
-            # e.g., for 256x256x256 output, more layers are needed.
-            nn.ConvTranspose3d(64, 1, kernel_size=3, stride=1, padding=1),
-            nn.Sigmoid() # Use Sigmoid for output normalized to [0, 1]
-        )
+        # Calculate the number of upsampling layers needed
+        num_upsamples = int(np.log2(output_size // initial_size))
+
+        in_channels = latent_channels
+
+        # Dynamically create upsampling layers
+        for i in range(num_upsamples):
+            out_channels = in_channels // 2 if in_channels > 16 else 16 # Don't go below 16 channels until the end
+            layers.append(nn.ConvTranspose3d(in_channels, out_channels, kernel_size=4, stride=2, padding=1))
+            layers.append(nn.BatchNorm3d(out_channels))
+            layers.append(nn.ReLU(True))
+            in_channels = out_channels
+
+        # Final layer to get to 1 channel output
+        layers.append(nn.ConvTranspose3d(in_channels, 1, kernel_size=3, stride=1, padding=1))
+        layers.append(nn.Sigmoid()) # Use Sigmoid for output normalized to [0, 1]
+
+        self.upsample = nn.Sequential(*layers)
 
     def forward(self, x):
         x = self.linear(x)
@@ -156,13 +155,13 @@ class Decoder3D(nn.Module):
 # Main Model: XrayTo3D
 class XrayTo3D(nn.Module):
     def __init__(self,
-                 image_size=32,
-                 patch_size=4,
+                 image_size,
+                 patch_size,
+                 volume_size,
                  enc_dim=512,
                  enc_depth=6,
                  enc_heads=8,
-                 enc_mlp_dim=1024,
-                 output_shape=(1, 32, 32, 32)):
+                 enc_mlp_dim=1024):
         super().__init__()
 
         self.frontal_encoder = ViTEncoder(
@@ -186,7 +185,7 @@ class XrayTo3D(nn.Module):
 
         self.decoder = Decoder3D(
             input_dim=enc_dim * 2, # Concatenated features from two encoders
-            output_shape=output_shape
+            output_size=volume_size
         )
 
     def forward(self, frontal_img, lateral_img):
@@ -203,44 +202,46 @@ class XrayTo3D(nn.Module):
 if __name__ == '__main__':
     # Example Usage and Verification
 
-    # Model configuration for dummy data (32x32)
-    model = XrayTo3D(
+    # --- Test with 32x32 configuration ---
+    print("--- Testing 32x32 configuration ---")
+    model_32 = XrayTo3D(
         image_size=32,
         patch_size=4,
+        volume_size=32,
         enc_dim=512,
-        enc_depth=3, # smaller depth for faster testing
-        enc_heads=4, # smaller heads
+        enc_depth=3,
+        enc_heads=4,
         enc_mlp_dim=512,
-        output_shape=(1, 32, 32, 32)
     )
 
-    # Dummy input tensors
-    frontal_img = torch.randn(2, 1, 32, 32) # (batch, channels, height, width)
-    lateral_img = torch.randn(2, 1, 32, 32)
+    frontal_img_32 = torch.randn(2, 1, 32, 32)
+    lateral_img_32 = torch.randn(2, 1, 32, 32)
+    output_volume_32 = model_32(frontal_img_32, lateral_img_32)
 
-    # Forward pass
-    output_volume = model(frontal_img, lateral_img)
+    print(f"Input shape (frontal): {frontal_img_32.shape}")
+    print(f"Output volume shape: {output_volume_32.shape}")
+    expected_shape_32 = (2, 1, 32, 32, 32)
+    assert output_volume_32.shape == expected_shape_32, f"Shape mismatch! Expected {expected_shape_32}, got {output_volume_32.shape}"
+    print("32x32 configuration test PASSED.")
 
-    print("Model created successfully.")
-    print(f"Input shape (frontal): {frontal_img.shape}")
-    print(f"Input shape (lateral): {lateral_img.shape}")
-    print(f"Output volume shape: {output_volume.shape}")
+    # --- Test with 256x256 configuration ---
+    print("\n--- Testing 256x256 configuration ---")
+    model_256 = XrayTo3D(
+        image_size=256,
+        patch_size=16,
+        volume_size=256,
+        enc_dim=1024,
+        enc_depth=6,
+        enc_heads=8,
+        enc_mlp_dim=2048,
+    )
 
-    # Check if output shape matches the desired output shape
-    expected_shape = (2, 1, 32, 32, 32)
-    assert output_volume.shape == expected_shape, f"Shape mismatch! Expected {expected_shape}, got {output_volume.shape}"
+    frontal_img_256 = torch.randn(1, 1, 256, 256)
+    lateral_img_256 = torch.randn(1, 1, 256, 256)
+    output_volume_256 = model_256(frontal_img_256, lateral_img_256)
 
-    print("\nModel architecture seems correct.")
-
-    # Example for target resolution 256
-    # Note: This would require a very large amount of VRAM
-    # model_256 = XrayTo3D(
-    #     image_size=256,
-    #     patch_size=16,
-    #     enc_dim=1024,
-    #     enc_depth=6,
-    #     enc_heads=8,
-    #     enc_mlp_dim=2048,
-    #     output_shape=(1, 256, 256, 256) # This would require a much deeper decoder
-    # )
-    # print("\nModel for 256x256 resolution configured (not tested).")
+    print(f"Input shape (frontal): {frontal_img_256.shape}")
+    print(f"Output volume shape: {output_volume_256.shape}")
+    expected_shape_256 = (1, 1, 256, 256, 256)
+    assert output_volume_256.shape == expected_shape_256, f"Shape mismatch! Expected {expected_shape_256}, got {output_volume_256.shape}"
+    print("256x256 configuration test PASSED.")
